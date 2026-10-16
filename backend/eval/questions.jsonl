@@ -1,0 +1,30 @@
+{"question": "How many days of paid annual leave do full-time employees get?", "file": "northwind_employee_handbook.md", "answer_contains": "24 days of paid annual leave"}
+{"question": "How much unused leave can I carry over to next year?", "file": "northwind_employee_handbook.md", "answer_contains": "Up to 10 unused days"}
+{"question": "Do interns get paid time off?", "file": "northwind_employee_handbook.md", "answer_contains": "Interns receive 1 day of paid leave"}
+{"question": "When do I need a doctor's certificate for sick leave?", "file": "northwind_employee_handbook.md", "answer_contains": "longer than 3 consecutive days"}
+{"question": "How long is maternity leave for the primary caregiver?", "file": "northwind_employee_handbook.md", "answer_contains": "26 weeks"}
+{"question": "How many days a week can I work from home?", "file": "northwind_employee_handbook.md", "answer_contains": "up to 3 days per week"}
+{"question": "Is there an allowance for buying a desk or chair for home?", "file": "northwind_employee_handbook.md", "answer_contains": "INR 15,000"}
+{"question": "What is the hotel limit per night in a metro city?", "file": "northwind_employee_handbook.md", "answer_contains": "INR 6,000 per night"}
+{"question": "What is the daily food allowance on business trips?", "file": "northwind_employee_handbook.md", "answer_contains": "INR 1,200"}
+{"question": "Which expenses need pre-approval from a department head?", "file": "northwind_employee_handbook.md", "answer_contains": "above INR 25,000"}
+{"question": "When are salary revisions effective?", "file": "northwind_employee_handbook.md", "answer_contains": "1 July"}
+{"question": "How much is the yearly budget for courses and certifications?", "file": "northwind_employee_handbook.md", "answer_contains": "INR 30,000"}
+{"question": "What are the core working hours?", "file": "northwind_employee_handbook.md", "answer_contains": "10:00 to 16:00"}
+{"question": "What does SAT stand for?", "file": "smart_meter_installation_sop.md", "answer_contains": "Site Acceptance Testing"}
+{"question": "Can a meter be invoiced before it passes acceptance testing?", "file": "smart_meter_installation_sop.md", "answer_contains": "only be invoiced after it passes SAT"}
+{"question": "How long can the power be switched off during a meter installation?", "file": "smart_meter_installation_sop.md", "answer_contains": "maximum of 30 minutes"}
+{"question": "What should the technician photograph before removing the old meter?", "file": "smart_meter_installation_sop.md", "answer_contains": "serial number and final reading"}
+{"question": "What voltage range is acceptable for a single-phase meter during SAT?", "file": "smart_meter_installation_sop.md", "answer_contains": "10% of the nominal 230 V"}
+{"question": "What happens after two failed SAT attempts?", "file": "smart_meter_installation_sop.md", "answer_contains": "escalated to the regional quality lead"}
+{"question": "What is the installation rate for a three-phase meter?", "file": "smart_meter_installation_sop.md", "answer_contains": "INR 900 per three-phase meter"}
+{"question": "What is the penalty for late SAT completion?", "file": "smart_meter_installation_sop.md", "answer_contains": "INR 50 per meter per day"}
+{"question": "What is the target first-attempt SAT pass rate?", "file": "smart_meter_installation_sop.md", "answer_contains": "95%"}
+{"question": "Within how many days must old meters be returned to the store?", "file": "smart_meter_installation_sop.md", "answer_contains": "within 7 days"}
+{"question": "What is the minimum password length?", "file": "acme_cloud_security_policy.pdf", "answer_contains": "at least 14 characters"}
+{"question": "How long does production database access last after approval?", "file": "acme_cloud_security_policy.pdf", "answer_contains": "after 8 hours"}
+{"question": "How quickly are accounts disabled when someone leaves the company?", "file": "acme_cloud_security_policy.pdf", "answer_contains": "within 4 hours of their exit"}
+{"question": "Where must API keys and encryption keys be stored?", "file": "acme_cloud_security_policy.pdf", "answer_contains": "secrets manager"}
+{"question": "How fast must a SEV-1 incident get an incident commander?", "file": "acme_cloud_security_policy.pdf", "answer_contains": "within 15 minutes"}
+{"question": "How soon must critical vulnerabilities in dependencies be fixed?", "file": "acme_cloud_security_policy.pdf", "answer_contains": "within 7 days"}
+{"question": "After how many minutes of inactivity must laptops lock?", "file": "acme_cloud_security_policy.pdf", "answer_contains": "5 minutes of inactivity"}

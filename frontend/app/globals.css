@@ -1,0 +1,29 @@
+@import "tailwindcss";
+
+@theme {
+  --color-accent: #2c4bd6;
+  --color-accent-soft: #e9eeff;
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: #f5f6f8;
+  color: #1b2130;
+}
+
+/* Blinking caret shown while an answer is streaming */
+.caret::after {
+  content: "▍";
+  margin-left: 2px;
+  animation: blink 1s steps(2, start) infinite;
+}
+@keyframes blink {
+  to {
+    visibility: hidden;
+  }
+}

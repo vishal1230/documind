@@ -1,0 +1,56 @@
+# DocuMind: Postgres + pgvector, FastAPI backend, Next.js frontend.
+# Optional root .env (for servers): PUBLIC_API_URL and CORS_ORIGINS, see docs/DEPLOY_AWS.md.
+# Usage: copy backend/.env.example to backend/.env, add GEMINI_API_KEY, then `docker compose up --build`.
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: documind
+      POSTGRES_PASSWORD: documind
+      POSTGRES_DB: documind
+    ports:
+      # Bound to 127.0.0.1 so the database is never exposed on a server's public IP.
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U documind -d documind"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+    env_file:
+      - path: ./backend/.env
+        required: false
+    environment:
+      # Inside the compose network the database is reachable as "db", not localhost.
+      DATABASE_URL: postgresql+psycopg://documind:documind@db:5432/documind
+      CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:3001"]}
+      # Optional local LLM: Ollama running on your machine (outside Docker) is reached via host.docker.internal.
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # makes host.docker.internal work on Linux servers too
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      # Host port 8001 (container still listens on 8000), so it never clashes with other local apps on 8000.
+      - "8001:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # The browser calls the API directly, so this is the address as seen from your machine.
+        NEXT_PUBLIC_API_URL: ${PUBLIC_API_URL:-http://localhost:8001}
+    depends_on:
+      - backend
+    ports:
+      # Host port 3001 (container still listens on 3000), so it never clashes with other local apps on 3000.
+      - "3001:3000"
+
+volumes:
+  pgdata:

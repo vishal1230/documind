@@ -1,0 +1,20 @@
+[project]
+name = "documind-backend"
+version = "1.0.0"
+description = "DocuMind API: RAG over your own documents with hybrid search and citations"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = ["B008"]  # FastAPI's Depends()/File() in default arguments is the intended pattern
+
+[tool.coverage.run]
+source = ["app"]
