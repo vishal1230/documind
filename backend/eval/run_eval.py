@@ -4,8 +4,9 @@ Retrieval (no API key needed):
     python -m eval.run_eval
     -> hit rate@1/3/5 and MRR for every search mode (vector, keyword, hybrid, hybrid + re-rank)
 
-Generation (needs GEMINI_API_KEY):
-    python -m eval.run_eval --generate
+Generation:
+    python -m eval.run_eval --generate               # Gemini (GEMINI_MODEL), needs GEMINI_API_KEY
+    python -m eval.run_eval --generate --llm ollama  # the local model (OLLAMA_MODEL), free, no limits
     -> answer accuracy (does the answer contain the key fact?), refusal on out-of-scope
        questions, and resistance to the prompt-injection document
 
@@ -26,7 +27,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.db import SessionLocal, User, init_db
-from app.rag import NO_ANSWER, generate_answer
+from app.rag import NO_ANSWER, _gemini, _inputs, _ollama, build_chain
 from app.retrieval import RetrievedChunk, SearchMode, search
 from app.service import ingest_file
 
@@ -113,17 +114,39 @@ class DailyQuotaError(RuntimeError):
     pass
 
 
-def _ask(session: Session, question: str, pause: float) -> str | None:
-    """One Gemini call, paced for free-tier limits.
+def make_chain(llm: str):
+    """One explicit model, with no fallbacks, so every answer in the report comes from the model it names.
+
+    (The app itself falls back from Gemini to other models; that is right for users but would mix
+    models in a benchmark without saying so.)
+    """
+    s = get_settings()
+    if s.fake_models:
+        from app.rag import get_llm
+
+        return build_chain(get_llm()), "stand-in test model"
+    if llm == "ollama":
+        if not s.ollama_model:
+            raise SystemExit("Set OLLAMA_MODEL in backend/.env to evaluate the local model.")
+        return build_chain(_ollama(s.ollama_model)), f"{s.ollama_model} (local, Ollama)"
+    if not s.gemini_api_key:
+        raise SystemExit("Set GEMINI_API_KEY in backend/.env, or use --llm ollama.")
+    return build_chain(_gemini(s.gemini_model)), s.gemini_model
+
+
+def _ask(session: Session, chain, question: str, pause: float) -> str | None:
+    """One model call, paced for free-tier limits.
 
     Temporary provider problems (429 per-minute limit, 503 overloaded, 504 timeout) are retried
     after a wait. A daily quota stops the run. Returns None if the call still fails after retries,
     so one flaky request doesn't throw away the whole evaluation.
     """
     chunks = search(session, question, owner_id=OWNER)
+    if not chunks:
+        return NO_ANSWER  # same shortcut as the app: nothing to ground an answer in
     for attempt in range(4):
         try:
-            answer = generate_answer(question, chunks)
+            answer = chain.invoke(_inputs(question, chunks, None))
             time.sleep(pause)
             return answer
         except Exception as e:
@@ -138,13 +161,15 @@ def _ask(session: Session, question: str, pause: float) -> str | None:
     return None
 
 
-def eval_generation(session: Session, items: list[dict], rpm: int) -> dict:
-    pause = 60 / rpm if rpm > 0 else 0
+def eval_generation(session: Session, items: list[dict], rpm: int, llm: str) -> dict:
+    chain, model_name = make_chain(llm)
+    pause = 60 / rpm if rpm > 0 and llm == "gemini" else 0  # pacing is only for the Gemini free tier
     total = len(items) + len(OUT_OF_SCOPE) + 1
-    print(f"  {total} Gemini calls at most {rpm}/min (about {total * pause / 60:.0f} min)")
+    pacing = f" at most {rpm}/min (about {total * pause / 60:.0f} min)" if pause else ""
+    print(f"  model: {model_name}; {total} calls{pacing}")
     correct = failed = 0
     for i, item in enumerate(items, 1):
-        answer = _ask(session, item["question"], pause)
+        answer = _ask(session, chain, item["question"], pause)
         if answer is None:
             failed += 1
             print(f"  [{i}/{len(items)}] FAILED (provider error) {item['question']}")
@@ -157,10 +182,11 @@ def eval_generation(session: Session, items: list[dict], rpm: int) -> dict:
         print(f"  [{i}/{len(items)}] {'ok ' if ok else 'MISS'} {item['question']}")
     refused = 0
     for q in OUT_OF_SCOPE:
-        refused += int(norm(NO_ANSWER) in norm(_ask(session, q, pause) or ""))
-    inj_answer = _ask(session, INJECTION_QUESTION, pause) or ""
+        refused += int(norm(NO_ANSWER) in norm(_ask(session, chain, q, pause) or ""))
+    inj_answer = _ask(session, chain, INJECTION_QUESTION, pause) or ""
     answered = len(items) - failed
     return {
+        "model": model_name,
         "answer_accuracy": correct / answered if answered else 0.0,
         "answered": answered,
         "failed_calls": failed,
@@ -194,7 +220,7 @@ def write_results(retrieval: list[dict], generation: dict | None, n_questions: i
     if generation:
         lines += [
             "",
-            f"## Generation (`{s.gemini_model}`)",
+            f"## Generation (`{generation['model']}`)",
             "",
             f"- Answer accuracy (key fact present): {generation['answer_accuracy']:.0%} "
             f"of {generation['answered']} answered questions ({generation['failed_calls']} provider errors)",
@@ -208,7 +234,10 @@ def write_results(retrieval: list[dict], generation: dict | None, n_questions: i
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--generate", action="store_true", help="also evaluate answers (needs GEMINI_API_KEY)")
+    parser.add_argument("--generate", action="store_true", help="also evaluate answers")
+    parser.add_argument(
+        "--llm", choices=["gemini", "ollama"], default="gemini", help="model to evaluate (default: GEMINI_MODEL)"
+    )
     parser.add_argument("--rpm", type=int, default=4, help="max Gemini calls per minute (free tier allows ~5)")
     args = parser.parse_args()
 
@@ -222,8 +251,8 @@ def main() -> None:
         write_results(retrieval, None, len(items))  # save retrieval numbers even if generation fails later
         generation = None
         if args.generate:
-            print("\nGeneration (calls Gemini)...")
-            generation = eval_generation(session, items, args.rpm)
+            print("\nGeneration...")
+            generation = eval_generation(session, items, args.rpm, args.llm)
             print(json.dumps(generation, indent=2))
             write_results(retrieval, generation, len(items))
 

@@ -137,7 +137,8 @@ docker compose up -d db
 cd backend
 .venv\Scripts\activate
 python -m eval.run_eval              # retrieval metrics only (no API key needed)
-python -m eval.run_eval --generate   # + answer accuracy, refusals, injection test (uses Gemini)
+python -m eval.run_eval --generate   # + answer accuracy, refusals, injection test (Gemini)
+python -m eval.run_eval --generate --llm ollama   # the same, with the local model
 ```
 
 Results are written to `backend/eval/results.md`.
@@ -153,18 +154,26 @@ Results are written to `backend/eval/results.md`.
 
 ### Results
 
-Retrieval, measured with the real models (`bge-small-en-v1.5` embeddings, `ms-marco-MiniLM-L-6-v2` re-ranker) on the 30 questions, running in Docker on a Windows laptop CPU:
+Retrieval, measured with the real models (`bge-small-en-v1.5` embeddings, `ms-marco-MiniLM-L-6-v2` re-ranker) on the 30 questions, running in Docker on a Windows laptop CPU (19 Oct 2026):
 
 | Mode | hit@1 | hit@3 | hit@5 | MRR | p50 latency |
 |---|---|---|---|---|---|
-| vector | 0.90 | 1.00 | 1.00 | 0.94 | 14 ms |
-| keyword | 0.73 | 0.93 | 0.97 | 0.83 | 3 ms |
-| hybrid (RRF) | 0.90 | 1.00 | 1.00 | 0.94 | 19 ms |
-| **hybrid + re-rank** | **0.97** | **1.00** | **1.00** | **0.98** | 597 ms |
+| vector | 0.90 | 1.00 | 1.00 | 0.94 | 11 ms |
+| keyword | 0.67 | 0.97 | 0.97 | 0.79 | 3 ms |
+| hybrid (RRF) | 0.93 | 1.00 | 1.00 | 0.96 | 17 ms |
+| **hybrid + re-rank** | **0.97** | **1.00** | **1.00** | **0.98** | 526 ms |
 
-Re-ranking puts the right document first for 29 of 30 questions (vector search alone: 27 of 30), at the cost of about 0.6 s of CPU time per question.
+Re-ranking puts the right document first for 29 of 30 questions (vector search alone: 27 of 30), at the cost of about 0.5 s of CPU time per question.
 
-Generation (answer accuracy, refusals, injection test): _to be added after a full `--generate` run; see `backend/eval/results.md`._
+Generation, measured with the local fallback model **`llama3.2:3b`** (Ollama, laptop CPU, one model only, no fallbacks):
+
+| Check | Result |
+|---|---|
+| Answer accuracy (key fact in the answer) | **30 / 30** |
+| Out-of-scope questions refused ("I couldn't find this…") | **3 / 3** |
+| Prompt-injection document | **Resisted**: the hidden instruction was not followed |
+
+A small 3B model can score this well because retrieval hands it the right passage every time (hit@5 = 1.00). One weakness showed up: in the injection test the model correctly ignored the attack but pasted the raw `<source>` block into its answer. To run the same check against Gemini: `python -m eval.run_eval --generate` (34 calls; the free tier's daily limit may need two days).
 
 ## Tests
 
