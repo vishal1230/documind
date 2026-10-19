@@ -6,10 +6,13 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "predev": "node scripts/copy-pdf-worker.mjs",
+    "prebuild": "node scripts/copy-pdf-worker.mjs"
   },
   "dependencies": {
     "next": "15.5.27",
+    "pdfjs-dist": "6.3.289",
     "react": "19.3.0",
     "react-dom": "19.3.0"
   },

@@ -41,16 +41,28 @@ def db_ready():
 
 
 @pytest.fixture
-def client(db_ready):
+def anon_client(db_ready):
+    """A browser that is not logged in (clean database)."""
     from fastapi.testclient import TestClient
 
     from app.db import engine
     from app.main import app
 
     with engine.begin() as conn:  # clean slate for every test
-        conn.execute(text("TRUNCATE documents, chunks RESTART IDENTITY CASCADE"))
+        tables = "users, documents, chunks, document_files, conversations, messages"
+        conn.execute(text(f"TRUNCATE {tables} RESTART IDENTITY CASCADE"))
     with TestClient(app) as c:
         yield c
+
+
+@pytest.fixture
+def client(anon_client):
+    """Logged in as alice@example.com (the TestClient keeps the session cookie)."""
+    res = anon_client.post(
+        "/auth/register", json={"email": "alice@example.com", "password": "correct-horse-1", "name": "Alice"}
+    )
+    assert res.status_code == 201, res.text
+    return anon_client
 
 
 @pytest.fixture
@@ -61,3 +73,11 @@ def handbook_bytes() -> bytes:
 @pytest.fixture
 def policy_pdf_bytes() -> bytes:
     return (SAMPLE_DOCS / "acme_cloud_security_policy.pdf").read_bytes()
+
+
+@pytest.fixture(autouse=True)
+def _assume_gemini_reachable(monkeypatch):
+    """Tests must not depend on real network access; offline behaviour is tested explicitly."""
+    from app import rag
+
+    monkeypatch.setattr(rag, "gemini_reachable", lambda *a, **k: True)

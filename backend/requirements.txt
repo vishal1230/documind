@@ -11,6 +11,12 @@ pgvector==0.5.1
 
 # Document parsing and chunking
 pypdf==6.20.1
+pypdfium2==5.14.0  # renders scanned PDF pages to images for OCR
+pytesseract==0.3.13  # Python wrapper for the Tesseract OCR engine (installed in the Docker image)
+pillow==12.3.0
+pyjwt==2.15.1  # signed login tokens
+bcrypt==5.0.0  # password hashing
+email-validator==2.3.0  # validates sign-up emails (pydantic EmailStr)
 langchain-text-splitters==1.1.3
 
 # Local embeddings and re-ranking (ONNX Runtime, no PyTorch needed)
@@ -20,3 +26,5 @@ fastembed==0.9.0
 langchain-core==1.6.10
 langchain-google-genai==4.4.2
 langchain-ollama==1.1.0
+faster-whisper==1.2.1
+av==18.1.0  # audio decoding for Whisper; av 19 removed an argument faster-whisper 1.2.1 uses

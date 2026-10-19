@@ -25,7 +25,7 @@ def test_pdf_keeps_page_numbers(policy_pdf_bytes):
 
 def test_unsupported_extension_rejected():
     with pytest.raises(UnsupportedFileError):
-        extract_pages("photo.png", b"\x89PNG")
+        extract_pages("archive.zip", b"PK\x03\x04")
 
 
 def test_empty_text_rejected():

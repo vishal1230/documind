@@ -149,6 +149,8 @@ Two small interfaces (`Protocol`s): `Embedder` (`embed_documents`, `embed_query`
 - `format_history` keeps the last 6 turns, so follow-ups like "and for interns?" work without the prompt growing forever.
 - `cited_source_numbers` extracts `[n]` markers and drops out-of-range numbers, so a hallucinated `[9]` is ignored.
 - `get_llm()` builds a **fallback chain**: `GEMINI_MODEL` → each of `GEMINI_FALLBACK_MODELS` → optional local `OLLAMA_MODEL` (via `langchain-ollama`). It uses LangChain's `with_fallbacks`: if one model raises (503 overloaded, 429 quota, timeout), the same prompt goes to the next. Each Gemini model gets temperature 0.2 (factual, consistent), 1 retry and a 20 s timeout, so an overloaded model is abandoned quickly. `GEMINI_THINKING_BUDGET=0` turns off the hidden "thinking" step for faster answers. The local model runs on your machine through Ollama, so the app keeps working, even fully offline, when the API is unavailable. In fake mode `get_llm()` returns `FakeListChatModel`. With no model configured it raises `MissingAPIKeyError`, which the API turns into a clear 503 message.
+- **Offline detection:** before using Gemini, `gemini_reachable()` tries a 1.5-second network connection to Google's API, and the result is cached for 30 s. When you're offline it skips Gemini completely and goes straight to the local model, instead of waiting through timeouts and retries (which cost about a minute per question).
+- **Non-English questions:** the answer prompt leads with the clean English version of the question, plus the user's original words with an instruction to answer in that language. Small local models match English questions to English sources far more reliably.
 - `describe_llm_error()` turns provider errors (503, 429, bad key, unknown model, Ollama not running) into a one-line message the UI can show.
 - The chain is `prompt | llm | StrOutputParser()`, written in LangChain Expression Language (LCEL). `generate_answer` calls `.invoke`; `stream_answer` uses `.astream` to yield tokens.
 
@@ -182,6 +184,92 @@ Pydantic models validate every input. A question must be 1–2,000 characters, `
 Downloads and loads both models. The Dockerfile runs it at **build** time, so the image already contains the models and the first user request isn't slow.
 
 ---
+
+### Voice: speech-to-text and text-to-speech
+
+- **Speech-to-text (`POST /transcribe`, `models.WhisperTranscriber`)**: the browser records the question with `MediaRecorder` (WebM/Opus) and uploads it with a `language` hint ("auto", "en" or "hi"). The backend runs **Whisper** (OpenAI's open speech model) locally through **faster-whisper**, which uses the CTranslate2 engine with **int8** weights, so it runs on a CPU. PyAV decodes the audio, so no ffmpeg install is needed.
+  - Model size: `small` is the default, because `base` is too weak for Hindi. Use `WHISPER_MODEL=base` or `tiny` for English-only speed.
+  - `vad_filter=True` (voice activity detection) cuts silence before decoding.
+  - `beam_size=1` (greedy decoding) is much faster and fine for short questions.
+  - **Hindi needs help.** Auto-detect often mistakes Hinglish for English or Urdu, so the UI has a **Voice language** selector. With "hi", Whisper is forced to Hindi and given a short Devanagari `initial_prompt`, which stops it writing Hindi in Urdu script.
+  - **Auto-stop (`lib/vad.ts`, voice activity detection in the browser):** the Web Audio API's `AnalyserNode` gives the raw microphone samples. Every 50 ms we compute their loudness (RMS).
+    - The first 300 ms set the room's **noise floor**. Speech must be about 2.5× louder than that.
+    - After at least 200 ms of speech, **1.5 s of quiet** stops the recording automatically.
+    - If nothing is said within 7 s, the recording is discarded and never uploaded.
+    - The mic button shows a ring that grows with your voice, and clicking it still stops early.
+  - The recognised text goes into the input box, not straight to the chat, so a mis-heard word can be fixed before sending.
+  - Recordings never leave the server, and the model is baked into the Docker image at build time.
+- **Text-to-speech (`lib/speech.ts`, `SpeakButton`)**: uses the browser's built-in **Web Speech API** (`speechSynthesis`). It's free, instant and works offline with the voices installed on Windows.
+  - Devanagari text gets a `hi-IN` voice; English and Hinglish get an Indian English voice.
+  - Citation markers like `[1]` are removed before speaking, and the answer is queued **sentence by sentence**, because Chrome silently stops very long utterances.
+- Browsers only allow microphone access on **https://** or **localhost**.
+
+### Query rewriting: Hindi/Hinglish and follow-ups (`app/query.py`)
+
+The embedding model and documents are English, so "mujhe kitni chhutti milti hai?" would not match "annual leave". A follow-up like "and for interns?" has no searchable meaning on its own. Before retrieval, `to_search_query()` asks the LLM, through the same Gemini → Ollama fallback chain, to rewrite the question into **one standalone English search query**. This is often called **query condensation** or query rewriting.
+
+- **Only when needed:** a question is rewritten if it's non-English (Devanagari or other non-Latin script, or at least two common Hinglish words like "kitni", "milti", "hai"), or if it is a **real follow-up**. A follow-up means there's chat history *and* the question is very short (4 words or fewer), starts with "and / what about / but…", or uses words that point back like "it / that / they / same / too".
+- **A new topic in an old chat is searched as-is.** We learned this the hard way: "What is the hotel cap per night?", asked after a SEV-1 question, was once rewritten as "…per night for a SEV-1 incident?" and the answer failed. The prompt now also says never to add topics from the conversation to a complete question, with an example of exactly that.
+- **Answer in the user's language:** the *answer* prompt still gets the original question, and rule 6 of the system prompt says to answer in the same language (English, Hindi or Hinglish).
+- **Fails safe:** if the rewrite errors, it searches with the original question.
+- The stream sends a `query` event, and the UI shows "Searched for: …", which makes the system easy to debug and to explain in a demo.
+
+### Saved chats (`app/conversations.py`, `conversations` and `messages` tables)
+
+- **Tables:** `conversations` (id, title, timestamps) and `messages` (role, content, plus for answers a **JSONB snapshot of the sources**, the cited numbers and the search query). Deleting a chat deletes its messages (`ON DELETE CASCADE`).
+- **Flow:** `/chat/stream` takes an optional `conversation_id`.
+  - Without one, it creates a chat whose title is the first question, trimmed at a word boundary.
+  - It saves the user's message, sends a `conversation` event (so the UI learns the id), and saves the answer when streaming finishes.
+- **The server owns the history:** when continuing a saved chat, the last 6 messages come from the database, not from the browser. That makes follow-ups work after a refresh, and a client can't inject fake history.
+- **Why a snapshot of the sources?** An old chat should still show its citations even if a document is later deleted or re-indexed.
+- **UI:** a "Chats" list in the sidebar (new, open, rename, delete). The open chat's id lives in the URL (`?c=<id>`), so a refresh or a bookmark reopens it.
+- **Known limit:** if you stop an answer midway, the question is saved but the partial answer isn't.
+
+### Source viewer: open the cited passage (`DocumentViewer.tsx`, `lib/highlight.ts`)
+
+- **Original files are stored** in a separate `document_files` table (bytea), so listing and searching documents never load file bytes. They're served by `GET /documents/{id}/file`. Files indexed before this feature have no stored copy; uploading the same file again attaches it (the duplicate check finds the document and adds the file).
+- **PDFs are rendered with pdf.js** (Mozilla's PDF engine): the cited page is drawn on a `<canvas>`, sized to the panel.
+  - pdf.js also gives the page's **text layer**: each text item with its position.
+  - We join the items into one string, remembering which item every character came from, find the chunk in it, and draw yellow boxes over the matching items. The boxes use the PDF→screen coordinate conversion, since PDF coordinates start bottom-left.
+- **Why matching needs care:** the stored chunk was cleaned at ingestion (hyphenated line breaks joined, spaces collapsed), so it never equals the raw text exactly.
+  - `findRange()` compares only letters, combining marks (Hindi vowel signs) and digits, lower-cased, and keeps a map back to the original positions.
+  - If the exact chunk isn't found, it matches the chunk's beginning and end separately.
+- **Markdown/TXT:** the file is shown as text with the passage in a `<mark>`, scrolled into view.
+- **Browser support:** we use the pdf.js *legacy* build. pdf.js 6 uses brand-new JavaScript features (e.g. `Map.getOrInsertComputed`) that many browsers don't have yet, and the legacy build includes polyfills. The pdf.js worker (which parses PDFs off the main thread) is copied into `public/` at build time.
+
+### OCR: scanned PDFs and photos (`app/ocr.py`)
+
+- **The problem:** a scanned PDF page is just a picture, so `pypdf` extracts no text and the document can't be searched.
+- **Detection:** after normal extraction, any PDF page with fewer than 20 characters (`OCR_MIN_CHARS`) is treated as scanned. Pages that do have text are left alone, so mixed PDFs work too.
+- **Rendering:** the scanned page is drawn as an image at 200 DPI with **pdfium**, Chrome's PDF engine, via `pypdfium2`. That's enough resolution for OCR without being slow.
+- **Reading:** **Tesseract**, the open-source OCR engine, reads the image with `eng+hin` (English and Hindi), using automatic page layout (`--psm 3`).
+  - Before OCR, images are converted to grayscale, rotated upright from the phone's EXIF data, and upscaled if small.
+- **Images** (`.png`, `.jpg`, `.webp`) go straight to Tesseract and are treated as a one-page document.
+- **Everything after OCR is the same pipeline:** clean, chunk, embed, hybrid search, cite. The upload response reports `ocr_pages`, and the UI shows "1 page read with OCR".
+- **Packaging:** Tesseract is a system program, so it's installed with `apt` in the backend image (`tesseract-ocr`, `-eng`, `-hin`). CI installs it as well, and the OCR tests skip themselves if it's missing.
+- **Limits:**
+  - OCR takes a few seconds per page, so scans are capped at `OCR_MAX_PAGES` (100).
+  - Handwriting and very low-quality photos read poorly.
+  - OCR'd PDF pages have no text layer, so the viewer opens the right page but can't draw the highlight boxes.
+  - Hindi text is indexed, but the English embedding model matches it less well than English.
+
+### Accounts and per-user documents (`app/auth.py`)
+
+- **Passwords** are hashed with **bcrypt**, which is slow on purpose and salted, so a leaked database doesn't reveal passwords.
+  - The minimum length is 8; the maximum is 72 bytes, bcrypt's limit.
+  - Login gives the same error for a wrong email and a wrong password, so attackers can't find out which emails have accounts.
+- **Sessions:** after login the server issues a **JWT** (signed with `SECRET_KEY`, HS256, expires after 7 days) inside an **httpOnly, SameSite=Lax cookie**.
+  - *httpOnly:* page JavaScript can't read it, so an XSS bug can't steal it.
+  - *SameSite=Lax:* other websites can't make the browser send it with their POST requests (CSRF protection).
+  - *A cookie rather than a header* because `<img src>` and "Open file" links to protected files then just work.
+  - API clients can send the same token as `Authorization: Bearer …`.
+  - CORS has `allow_credentials` on, with an explicit list of allowed origins.
+- **Authorization:** every endpoint except `/health` depends on `current_user`.
+  - Search adds `WHERE documents.owner_id = :me` to **both** the vector query and the keyword query, so another user's chunks can never be retrieved, even by accident.
+  - Files and chats are checked the same way. Someone else's document or chat returns **404, not 403**, so its existence isn't revealed.
+- **Duplicates are per user:** the unique index is `(owner_id, sha256)`, so two people can upload the same file.
+- **Upgrading an existing database:** `create_all()` only creates *new* tables, so `init_db()` also runs a few idempotent `ALTER TABLE … ADD COLUMN IF NOT EXISTS` / index statements, which is a mini migration. The **first account** created adopts documents and chats from before accounts existed, so nothing disappears. (A larger project would use Alembic.)
+- **The evaluation** uses its own system account (`eval@documind.local`, which can't log in), so test documents never mix with real users' documents.
 
 ## 5. Frontend walkthrough
 

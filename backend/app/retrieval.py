@@ -56,18 +56,28 @@ def _to_retrieved(rows) -> list[RetrievedChunk]:
 
 
 def vector_search(
-    session: Session, query_vec: list[float], k: int, document_ids: list[uuid.UUID] | None = None
+    session: Session,
+    query_vec: list[float],
+    k: int,
+    document_ids: list[uuid.UUID] | None = None,
+    owner_id: uuid.UUID | None = None,
 ) -> list[RetrievedChunk]:
     """Nearest neighbours by cosine distance (pgvector's <=> operator), served by the HNSW index."""
     distance = Chunk.embedding.cosine_distance(query_vec)
     stmt = select(Chunk, Document.filename, (1 - distance).label("score")).join(Document).order_by(distance).limit(k)
     if document_ids:
         stmt = stmt.where(Chunk.document_id.in_(document_ids))
+    if owner_id is not None:  # each user only ever searches their own documents
+        stmt = stmt.where(Document.owner_id == owner_id)
     return _to_retrieved(session.execute(stmt).all())
 
 
 def keyword_search(
-    session: Session, query: str, k: int, document_ids: list[uuid.UUID] | None = None
+    session: Session,
+    query: str,
+    k: int,
+    document_ids: list[uuid.UUID] | None = None,
+    owner_id: uuid.UUID | None = None,
 ) -> list[RetrievedChunk]:
     """PostgreSQL full-text search. websearch_to_tsquery understands quotes, OR and -excluded words.
 
@@ -86,6 +96,8 @@ def keyword_search(
     )
     if document_ids:
         stmt = stmt.where(Chunk.document_id.in_(document_ids))
+    if owner_id is not None:  # each user only ever searches their own documents
+        stmt = stmt.where(Document.owner_id == owner_id)
     return _to_retrieved(session.execute(stmt).all())
 
 
@@ -121,20 +133,25 @@ def search(
     top_k: int | None = None,
     mode: SearchMode = SearchMode.hybrid_rerank,
     document_ids: list[uuid.UUID] | None = None,
+    owner_id: uuid.UUID | None = None,
 ) -> list[RetrievedChunk]:
+    """owner_id limits the search to one user's documents (always set by the API; None = all, for the eval)."""
     s = get_settings()
     top_k = top_k or s.top_k
     n = max(s.candidate_k, top_k)
 
     if mode == SearchMode.keyword:
-        return keyword_search(session, query, top_k, document_ids)
+        return keyword_search(session, query, top_k, document_ids, owner_id)
 
     query_vec = get_embedder().embed_query(query)
     if mode == SearchMode.vector:
-        return vector_search(session, query_vec, top_k, document_ids)
+        return vector_search(session, query_vec, top_k, document_ids, owner_id)
 
     fused = reciprocal_rank_fusion(
-        [vector_search(session, query_vec, n, document_ids), keyword_search(session, query, n, document_ids)],
+        [
+            vector_search(session, query_vec, n, document_ids, owner_id),
+            keyword_search(session, query, n, document_ids, owner_id),
+        ],
         k=s.rrf_k,
     )
     if mode == SearchMode.hybrid:

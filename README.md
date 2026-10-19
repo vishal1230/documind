@@ -9,13 +9,21 @@ Upload PDFs, Markdown or text files. DocuMind splits them into chunks, indexes t
 
 ## Features
 
-- **Upload & index** PDF / Markdown / TXT, with page numbers kept for PDFs and duplicate files detected by SHA-256.
+- **Upload & index** PDF / Markdown / TXT / images (drag and drop, real upload progress), with page numbers kept for PDFs and duplicate files detected by SHA-256.
 - **Hybrid retrieval**: pgvector cosine search (HNSW index) + PostgreSQL full-text search (GIN index), merged with Reciprocal Rank Fusion.
 - **Re-ranking** with a cross-encoder (`ms-marco-MiniLM-L-6-v2`) before the LLM sees anything.
 - **Grounded answers** with `[n]` citations, a fixed "I couldn't find this" refusal, and short conversation memory for follow-ups.
 - **Streaming** answers over Server-Sent Events.
 - **Prompt-injection defence**: document text is wrapped as untrusted data; a test document tries to hijack the model and the eval checks that it fails.
-- **Scope search** to selected documents.
+- **Scope search** to selected documents, or one document from its menu.
+- **Voice**: ask by speaking (recording stops by itself when you pause; local **Whisper** speech-to-text via faster-whisper, English or Hindi/Hinglish) and have answers **read aloud** (browser text-to-speech, Hindi voice for Hindi answers).
+- **Ask in Hindi or Hinglish**: the question is translated to an English search query for retrieval, and the answer comes back in your language.
+- **OCR for scans and photos**: scanned PDF pages (no text layer) and PNG/JPG photos of documents are read with **Tesseract OCR** (English + Hindi). Try `sample_docs/ocr/`.
+- **Open the source**: "View in document" opens the original PDF at the cited page with the exact passage highlighted (pdf.js), or the Markdown/text file with the passage marked.
+- **Accounts**: sign up / log in (bcrypt-hashed passwords, signed session in an httpOnly cookie). Every document, search, file and chat is private to its owner; another user's document returns "not found".
+- **Saved chats**: every conversation is stored in PostgreSQL. Reopen it from the sidebar (or via its `?c=` link) with all answers and citations, or rename or delete it.
+- **Smart follow-ups**: "and for interns?" is rewritten into a standalone question using the chat history before searching (query condensation). The UI shows what was searched.
+- **Clean, accessible interface**: collapsible sidebar (drawer on mobile), Markdown answers with keyboard-accessible citation chips, an auto-growing question box (Enter sends, Shift+Enter adds a line), confirmation dialogs and toasts, responsive from phone to desktop, and respect for the system's reduced-motion setting. No UI library: Tailwind design tokens and small hand-written components.
 - **Evaluation script**: 30 labelled questions, hit@k / MRR / latency for each search mode, plus answer accuracy, refusal and injection checks.
 - **Free, local embeddings** (fastembed / ONNX, no GPU, no PyTorch). Only answer generation calls an API.
 - Docker Compose for one-command start; GitHub Actions for lint, tests (70% coverage gate) and frontend build.
@@ -44,7 +52,7 @@ flowchart LR
 | Embeddings | fastembed `BAAI/bge-small-en-v1.5` | Strong small English model, runs on CPU, free |
 | Re-ranker | `Xenova/ms-marco-MiniLM-L-6-v2` cross-encoder | Reads question and chunk together, so it is more accurate than embedding similarity |
 | LLM | Gemini (`gemini-3.8-flash` by default), optional local Ollama fallback | Fast and cheap; automatic failover to backup Gemini models, then a local model |
-| Frontend | Next.js 15 (App Router), React 19, Tailwind 4 | Streaming chat UI with citation badges |
+| Frontend | Next.js 15 (App Router), React 19, Tailwind 4 | Streaming chat UI, citations, PDF viewer (pdf.js), voice input |
 
 Full explanation of every file and design decision: **[docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md)**.
 
@@ -73,8 +81,10 @@ Try it: drag the files from `sample_docs/` onto the upload box, then click one o
 
 If Gemini is overloaded (503) or you hit the free-tier quota (429), DocuMind can fall back to a model running on your own machine, so the app keeps answering. Without a Gemini key it runs fully offline.
 
-1. Install [Ollama](https://ollama.com/download) and pull a small model: `ollama pull qwen2.5:3b` (about 2 GB).
-2. Add `OLLAMA_MODEL=qwen2.5:3b` to `backend/.env`.
+1. Install [Ollama](https://ollama.com/download) and pull a small model: `ollama pull llama3.2:3b` (about 2 GB).
+2. Add `OLLAMA_MODEL=llama3.2:3b` to `backend/.env`.
+
+   We compared local models on translating Hindi/Hinglish questions (`backend/eval/compare_local_models.py`). `llama3.2:3b` got 3 of 3 right; `phi4-mini` misread both Hindi questions. Llama 3.2 officially supports Hindi. Full side-by-side results: [docs/MODEL_COMPARISON.md](docs/MODEL_COMPARISON.md).
 3. `docker compose up -d --build backend`
 
 Order of attempts: `GEMINI_MODEL` → each of `GEMINI_FALLBACK_MODELS` → `OLLAMA_MODEL`. A local 3B model on a laptop CPU is slower (several seconds per answer) and less precise than Gemini, but it keeps the app working and your documents never leave your machine.
@@ -103,12 +113,19 @@ npm run dev -- -p 3001                 # http://localhost:3001
 
 | Method | Path | Purpose |
 |---|---|---|
+| POST | `/auth/register`, `/auth/login`, `/auth/logout` | Accounts; sets/clears the httpOnly session cookie |
+| GET | `/auth/me` | The logged-in user (401 if not logged in). All endpoints below require login |
 | GET | `/health` | Liveness + database check |
 | POST | `/documents` | Upload a file (multipart `file`). Returns `duplicate: true` if already indexed |
 | GET | `/documents` | List indexed documents |
 | DELETE | `/documents/{id}` | Delete a document and its chunks |
 | POST | `/search` | Retrieval only: `{query, top_k, mode}`; mode = `vector`, `keyword`, `hybrid`, `hybrid_rerank` |
 | POST | `/chat` | Answer + sources + cited numbers (JSON) |
+| POST | `/transcribe` | Speech-to-text: multipart `audio` (WebM/Opus, MP4, WAV…) → `{text, language, duration_s}` |
+| GET | `/documents/{id}/file` | The original uploaded file (for the viewer) |
+| GET | `/conversations` | Saved chats, most recent first |
+| GET | `/conversations/{id}` | One chat with all messages, sources and citations |
+| PATCH / DELETE | `/conversations/{id}` | Rename (`{title}`) or delete a chat |
 | POST | `/chat/stream` | Same, streamed as SSE events: `sources`, `token`…, `done` (or `error`) |
 
 ## Evaluation
@@ -160,7 +177,7 @@ pytest --cov=app
 ruff check . ; ruff format --check .
 ```
 
-`FAKE_MODELS=true` swaps in a hashing embedder, a word-overlap re-ranker and a canned LLM, so tests are fast, offline and free. They still run against a real PostgreSQL with pgvector. 27 tests, about 92% coverage. CI runs the same checks on every push.
+`FAKE_MODELS=true` swaps in a hashing embedder, a word-overlap re-ranker and a canned LLM, so tests are fast, offline and free. They still run against a real PostgreSQL with pgvector. 65 tests, about 93% coverage. CI runs the same checks on every push.
 
 ## Project structure
 
@@ -194,10 +211,10 @@ Step-by-step AWS EC2 guide: [docs/DEPLOY_AWS.md](docs/DEPLOY_AWS.md).
 
 ## Limitations and next steps
 
-- No user accounts: everyone using one deployment shares the same documents. Next step: auth + a `user_id` on documents.
-- Scanned PDFs (images) have no text layer; OCR is not included.
+- OCR quality depends on the scan; handwriting and low-resolution photos are read poorly.
 - Ingestion runs inside the upload request; very large files would need a background queue.
-- Tables and figures are read as plain text.
+- Tables and figures in documents are read as plain text.
+- No password reset or email verification yet.
 - The evaluation set is small (30 questions) and written for the sample documents.
 
 ## License

@@ -175,3 +175,42 @@ def test_answer_comes_from_local_model_when_gemini_fails(monkeypatch):
         assert rag.generate_answer("How much leave?", [chunk]) == "Local answer [1]."
     finally:
         get_settings.cache_clear()
+
+
+def test_english_search_query_is_added_to_the_answer_prompt():
+    from app.rag import _inputs
+
+    hindi = _inputs("मुझे कितनी छुट्टी मिलती है", [], None, "How many days of leave do I get?")["question"]
+    assert hindi.startswith("How many days of leave do I get?")  # English first, for small models
+    assert "मुझे कितनी छुट्टी मिलती है" in hindi and "same language" in hindi
+    same = _inputs("How much leave?", [], None, "How much leave?")["question"]
+    assert same == "How much leave?"
+
+
+def test_offline_goes_straight_to_the_local_model(monkeypatch):
+    from app import rag
+    from app.config import get_settings
+
+    _real_llm_env(monkeypatch, GEMINI_API_KEY="test-key-not-real", OLLAMA_MODEL="phi4-mini")
+    monkeypatch.setattr(rag, "gemini_reachable", lambda *a, **k: False)
+    try:
+        assert rag.get_llm().__class__.__name__ == "ChatOllama"
+    finally:
+        get_settings.cache_clear()
+
+
+def test_reachability_check_is_cached(monkeypatch):
+    from app import rag
+
+    calls = []
+
+    def fake_connect(*args, **kwargs):
+        calls.append(args)
+        raise OSError("no network")
+
+    monkeypatch.undo()  # use the real gemini_reachable, not the autouse stub
+    monkeypatch.setattr(rag.socket, "create_connection", fake_connect)
+    monkeypatch.setitem(rag._reachability, "checked_at", 0.0)
+    assert rag.gemini_reachable() is False
+    assert rag.gemini_reachable() is False
+    assert len(calls) == 1  # second call used the cached result

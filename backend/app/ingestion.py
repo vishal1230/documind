@@ -9,13 +9,23 @@ import unicodedata
 from dataclasses import dataclass
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from PIL import Image
 from pypdf import PdfReader
+
+from app import ocr
+from app.config import get_settings
 
 SUPPORTED_TYPES = {
     ".pdf": "application/pdf",
     ".md": "text/markdown",
     ".txt": "text/plain",
+    # Photos/scans of documents: read with OCR
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
 }
+IMAGE_TYPES = {".png", ".jpg", ".jpeg", ".webp"}
 
 
 class UnsupportedFileError(ValueError):
@@ -30,6 +40,7 @@ class EmptyDocumentError(ValueError):
 class Page:
     number: int | None  # 1-based page number for PDFs, None for text files
     text: str
+    ocr: bool = False  # text was read from an image by OCR
 
 
 @dataclass
@@ -48,19 +59,55 @@ def extract_pages(filename: str, data: bytes) -> list[Page]:
     """Extract text page by page so every chunk can cite its page number."""
     ext = file_extension(filename)
     if ext not in SUPPORTED_TYPES:
-        raise UnsupportedFileError(f"Unsupported file type '{ext or filename}'. Use PDF, Markdown or TXT.")
+        raise UnsupportedFileError(
+            f"Unsupported file type '{ext or filename}'. Use PDF, Markdown, TXT or an image (PNG/JPG)."
+        )
 
     if ext == ".pdf":
         reader = PdfReader(io.BytesIO(data))
-        pages = [Page(number=i + 1, text=page.extract_text() or "") for i, page in enumerate(reader.pages)]
+        pages = [Page(number=i + 1, text=clean_text(page.extract_text() or "")) for i, page in enumerate(reader.pages)]
+        pages = _ocr_scanned_pages(data, pages)
+    elif ext in IMAGE_TYPES:
+        pages = [Page(number=1, text=clean_text(_ocr_image(data)), ocr=True)]
     else:
-        pages = [Page(number=None, text=data.decode("utf-8", errors="replace"))]
+        pages = [Page(number=None, text=clean_text(data.decode("utf-8", errors="replace")))]
 
-    pages = [Page(p.number, clean_text(p.text)) for p in pages]
     if not any(p.text for p in pages):
-        # A scanned PDF has images, not text. OCR (the ScanSense project) would fix this.
-        raise EmptyDocumentError("No extractable text found. Is this a scanned PDF?")
+        raise EmptyDocumentError("No readable text found in this file (even with OCR).")
     return pages
+
+
+def _ocr_scanned_pages(pdf_bytes: bytes, pages: list[Page]) -> list[Page]:
+    """Re-read pages that have (almost) no text layer, i.e. scanned pages, with OCR."""
+    s = get_settings()
+    scanned = [i for i, p in enumerate(pages) if len(p.text) < s.ocr_min_chars]
+    if not scanned or not s.ocr_enabled:
+        return pages
+    if len(scanned) > s.ocr_max_pages:
+        raise EmptyDocumentError(
+            f"This scan has {len(scanned)} pages without text; OCR is limited to {s.ocr_max_pages}."
+        )
+    try:
+        for i in scanned:
+            pages[i] = Page(pages[i].number, clean_text(ocr.read_pdf_page(pdf_bytes, i)), ocr=True)
+    except ocr.OcrUnavailableError as e:
+        if not any(p.text for p in pages):
+            raise EmptyDocumentError(f"This looks like a scanned PDF. {e}") from e
+    return pages
+
+
+def _ocr_image(data: bytes) -> str:
+    if not get_settings().ocr_enabled:
+        raise EmptyDocumentError("Images need OCR, which is turned off (OCR_ENABLED=false).")
+    try:
+        image = Image.open(io.BytesIO(data))
+        image.load()
+    except Exception as e:
+        raise EmptyDocumentError("This image could not be opened.") from e
+    try:
+        return ocr.read_image(image)
+    except ocr.OcrUnavailableError as e:
+        raise EmptyDocumentError(str(e)) from e
 
 
 def clean_text(text: str) -> str:

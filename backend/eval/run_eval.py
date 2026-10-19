@@ -17,13 +17,15 @@ import json
 import re
 import statistics
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.db import SessionLocal, init_db
+from app.db import SessionLocal, User, init_db
 from app.rag import NO_ANSWER, generate_answer
 from app.retrieval import RetrievedChunk, SearchMode, search
 from app.service import ingest_file
@@ -50,11 +52,30 @@ def is_hit(chunk: RetrievedChunk, item: dict) -> bool:
     return chunk.filename == item["file"] and norm(item["answer_contains"]) in norm(chunk.content)
 
 
-def ingest_samples(session: Session) -> None:
+OWNER: uuid.UUID | None = None  # set by ingest_samples(); all searches are limited to this account
+
+EVAL_EMAIL = "eval@documind.local"  # a system account that owns the evaluation's copy of the samples
+
+
+def eval_owner(session: Session) -> uuid.UUID:
+    """The evaluation's own account, so its documents never mix with real users' uploads (or vice versa)."""
+    user = session.scalar(select(User).where(User.email == EVAL_EMAIL))
+    if user is None:
+        user = User(email=EVAL_EMAIL, name="Evaluation", password_hash="!")  # "!" never matches: can't log in
+        session.add(user)
+        session.commit()
+    return user.id
+
+
+def ingest_samples(session: Session) -> uuid.UUID:
+    """Index the sample documents for the evaluation account; returns that account's id."""
+    global OWNER
+    owner = OWNER = eval_owner(session)
     for path in sorted(SAMPLE_DOCS.iterdir()):
         if path.suffix in {".md", ".pdf", ".txt"}:
-            doc, dup = ingest_file(session, path.name, path.read_bytes())
+            doc, dup = ingest_file(session, path.name, path.read_bytes(), owner_id=owner)
             print(f"  {'exists ' if dup else 'indexed'} {path.name} ({doc.num_chunks} chunks)")
+    return owner
 
 
 def eval_retrieval(session: Session, items: list[dict]) -> list[dict]:
@@ -64,7 +85,7 @@ def eval_retrieval(session: Session, items: list[dict]) -> list[dict]:
         rr, latencies = [], []
         for item in items:
             start = time.perf_counter()
-            results = search(session, item["question"], top_k=5, mode=mode)
+            results = search(session, item["question"], top_k=5, mode=mode, owner_id=OWNER)
             latencies.append((time.perf_counter() - start) * 1000)
             rank = next((i for i, c in enumerate(results, 1) if is_hit(c, item)), None)
             for k in hits:
@@ -99,7 +120,7 @@ def _ask(session: Session, question: str, pause: float) -> str | None:
     after a wait. A daily quota stops the run. Returns None if the call still fails after retries,
     so one flaky request doesn't throw away the whole evaluation.
     """
-    chunks = search(session, question)
+    chunks = search(session, question, owner_id=OWNER)
     for attempt in range(4):
         try:
             answer = generate_answer(question, chunks)

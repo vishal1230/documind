@@ -11,12 +11,17 @@ FROM python:3.11-slim
 ENV PATH="/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    FASTEMBED_CACHE_PATH=/models
+    FASTEMBED_CACHE_PATH=/models \
+    WHISPER_DOWNLOAD_ROOT=/models/whisper
+# Tesseract OCR engine with English and Hindi language data, for scanned PDFs and images.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng tesseract-ocr-hin \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build /venv /venv
 COPY app ./app
 
-# Bake the embedding + re-ranker models into the image so containers start instantly.
+# Bake the embedding, re-ranker and Whisper models into the image so containers start instantly.
 # Build with --build-arg DOWNLOAD_MODELS=false to skip (e.g. in CI).
 ARG DOWNLOAD_MODELS=true
 RUN if [ "$DOWNLOAD_MODELS" = "true" ]; then python -m app.warmup; fi

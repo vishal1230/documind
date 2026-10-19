@@ -35,6 +35,8 @@ jobs:
           python-version: "3.11"
           cache: pip
           cache-dependency-path: backend/requirements*.txt
+      - name: Install Tesseract OCR
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-hin
       - run: pip install -r requirements-dev.txt
       - name: Lint
         run: |

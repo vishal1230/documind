@@ -27,3 +27,6 @@ backend/eval/results.md
 Thumbs.db
 .vscode/
 .idea/
+
+# Generated at build time (copied from node_modules/pdfjs-dist)
+frontend/public/pdf.worker.min.mjs

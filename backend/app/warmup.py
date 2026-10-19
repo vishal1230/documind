@@ -5,7 +5,7 @@
 Without this, the first upload or question would wait ~30 s for the download.
 """
 
-from app.models import get_embedder, get_reranker
+from app.models import get_embedder, get_reranker, get_transcriber
 
 if __name__ == "__main__":
     vec = get_embedder().embed_query("warm up")
@@ -14,3 +14,5 @@ if __name__ == "__main__":
     if reranker:
         reranker.score("warm up", ["warm up"])
         print("re-ranker ready")
+    get_transcriber()  # downloads the Whisper model
+    print("speech-to-text ready")

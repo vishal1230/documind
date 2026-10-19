@@ -62,6 +62,14 @@ EOT
 
 Replace `<PUBLIC_IP>` with your instance's public IP (or Elastic IP).
 
+**Also set a secret for logins** (anyone who knows it could forge a login). In `backend/.env`:
+
+```bash
+python3 -c "import secrets; print('SECRET_KEY=' + secrets.token_urlsafe(48))" >> backend/.env
+```
+
+When you add HTTPS (section 7), also add `COOKIE_SECURE=true`.
+
 ## 5. Start
 
 ```bash
@@ -83,6 +91,8 @@ docker compose up -d --build
 ## 7. Optional: HTTPS and a domain
 
 For a cleaner link (`https://documind.yourdomain.com`), point a domain at the Elastic IP and put Caddy in front as a reverse proxy. It gets free Let's Encrypt certificates automatically. Then set `PUBLIC_API_URL=https://api.yourdomain.com`, update `CORS_ORIGINS` to match, rebuild, and close ports 3001/8001 in the security group in favour of 80/443.
+
+> The microphone button needs **HTTPS** (browsers only allow mic access on https:// or localhost). On a plain `http://<IP>:3001` link, voice input won't work; everything else will.
 
 ## 8. Stop paying when you're done
 

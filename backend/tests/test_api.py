@@ -32,7 +32,8 @@ def test_duplicate_upload_is_detected(client, handbook_bytes):
 
 
 def test_rejects_bad_files(client):
-    assert upload(client, "image.png", b"\x89PNG....").status_code == 415
+    assert upload(client, "archive.zip", b"PK....").status_code == 415
+    assert upload(client, "broken.png", b"\x89PNG....").status_code == 422  # image, but unreadable
     assert upload(client, "empty.txt", b"").status_code == 400
 
 
@@ -80,10 +81,63 @@ def test_chat_stream_sends_sources_tokens_done(client, handbook_bytes):
         raw = "".join(r.iter_text())
     events = [block.split("\n") for block in raw.strip().split("\n\n")]
     names = [e[0].removeprefix("event: ") for e in events]
-    assert names[0] == "sources" and names[-1] == "done" and "token" in names
+    assert names[0] == "conversation" and names[1] == "sources" and names[-1] == "done" and "token" in names
     assert json.loads(events[-1][1].removeprefix("data: "))["cited"] == [1]
 
 
 def test_validation_errors(client):
     assert client.post("/chat", json={"question": ""}).status_code == 422
     assert client.post("/search", json={"query": "x", "top_k": 500}).status_code == 422
+
+
+def test_transcribe_returns_question_text(client):
+    res = client.post("/transcribe", files={"audio": ("q.webm", b"\x1aE\xdf\xa3fake-audio", "audio/webm")})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["text"] == "How many days of annual leave do I get?"
+    assert body["language"] == "en"
+
+
+def test_transcribe_rejects_empty_and_huge_audio(client):
+    assert client.post("/transcribe", files={"audio": ("q.webm", b"", "audio/webm")}).status_code == 400
+    big = b"x" * (10 * 1024 * 1024 + 1)
+    assert client.post("/transcribe", files={"audio": ("q.webm", big, "audio/webm")}).status_code == 413
+
+
+def test_transcribe_reports_unreadable_audio(client):
+    res = client.post("/transcribe", files={"audio": ("q.webm", b"\x00\x00\x00", "audio/webm")})
+    assert res.status_code == 422
+    assert "Could not read the audio" in res.json()["detail"]
+
+
+def test_transcribe_accepts_a_language_hint(client):
+    res = client.post(
+        "/transcribe", files={"audio": ("q.webm", b"\x1aE\xdf\xa3fake", "audio/webm")}, data={"language": "hi"}
+    )
+    assert res.status_code == 200
+    assert res.json()["language"] == "hi"  # the hint reaches the transcriber
+
+
+def test_chat_reports_the_search_query(client, handbook_bytes):
+    client.post("/documents", files={"file": ("handbook.md", handbook_bytes, "text/markdown")})
+    body = client.post("/chat", json={"question": "How many days of annual leave do I get?"}).json()
+    assert body["search_query"] == "How many days of annual leave do I get?"
+
+
+def test_original_file_can_be_downloaded_for_the_viewer(client, handbook_bytes, policy_pdf_bytes):
+    md = upload(client, "handbook.md", handbook_bytes).json()
+    pdf = upload(client, "policy.pdf", policy_pdf_bytes).json()
+    assert all(d["has_file"] for d in client.get("/documents").json())
+
+    res = client.get(f"/documents/{pdf['id']}/file")
+    assert res.status_code == 200 and res.headers["content-type"] == "application/pdf"
+    assert res.content == policy_pdf_bytes and res.headers["content-disposition"].startswith("inline")
+
+    text = client.get(f"/documents/{md['id']}/file")
+    assert text.headers["content-type"].startswith("text/plain") and text.content == handbook_bytes
+
+
+def test_file_is_deleted_with_its_document(client, handbook_bytes):
+    doc = upload(client, "handbook.md", handbook_bytes).json()
+    client.delete(f"/documents/{doc['id']}")
+    assert client.get(f"/documents/{doc['id']}/file").status_code == 404

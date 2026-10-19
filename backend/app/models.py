@@ -8,6 +8,7 @@ Hugging Face the first time they are used (~130 MB in total) and are cached afte
 import hashlib
 import math
 import re
+from dataclasses import dataclass
 from functools import lru_cache
 from typing import Protocol
 
@@ -21,6 +22,21 @@ class Embedder(Protocol):
 
 class Reranker(Protocol):
     def score(self, query: str, passages: list[str]) -> list[float]: ...
+
+
+@dataclass(frozen=True)
+class Transcript:
+    text: str
+    language: str  # language detected in the audio, e.g. "en" or "hi"
+    duration_s: float
+
+
+class Transcriber(Protocol):
+    def transcribe(self, audio: bytes, language: str | None = None) -> Transcript: ...
+
+
+class AudioDecodeError(ValueError):
+    """The uploaded bytes are not audio we can decode."""
 
 
 class FastEmbedEmbedder:
@@ -105,3 +121,57 @@ def get_reranker() -> Reranker | None:
     if not s.use_reranker:
         return None
     return WordOverlapReranker() if s.fake_models else FastEmbedReranker(s.reranker_model)
+
+
+HINDI_HINT = "नमस्ते, यह छुट्टी और नीति के बारे में एक सवाल है।"
+
+
+class WhisperTranscriber:
+    """Speech-to-text with OpenAI's Whisper, run locally by faster-whisper (CTranslate2 engine).
+
+    int8 quantisation makes the "base" model (~150 MB) fast enough on a laptop CPU.
+    The browser records WebM/Opus; faster-whisper decodes it with PyAV, so no ffmpeg install is needed.
+    """
+
+    def __init__(self, model_name: str, compute_type: str, download_root: str | None, translate: bool):
+        from faster_whisper import WhisperModel
+
+        self._model = WhisperModel(model_name, device="cpu", compute_type=compute_type, download_root=download_root)
+        self._task = "translate" if translate else "transcribe"
+
+    def transcribe(self, audio: bytes, language: str | None = None) -> Transcript:
+        import io
+
+        try:
+            segments, info = self._model.transcribe(
+                io.BytesIO(audio),
+                language=language,  # None = auto-detect; "hi" forces Hindi (auto-detect often misses Hinglish)
+                task=self._task,  # "translate" = any language in, English text out
+                beam_size=1,  # greedy decoding: much faster on CPU, fine for short questions
+                vad_filter=True,  # skip silence at the start/end of the recording
+                # A Devanagari hint stops Whisper writing Hindi in Urdu script.
+                initial_prompt=HINDI_HINT if language == "hi" else None,
+            )
+            text = " ".join(seg.text.strip() for seg in segments)  # segments are lazy: decoding happens here
+        except Exception as e:  # PyAV raises its own error types for bad/unsupported audio
+            raise AudioDecodeError(f"Could not read the audio: {e.__class__.__name__}") from e
+        return Transcript(text=text.strip(), language=info.language, duration_s=round(info.duration, 2))
+
+
+class FakeTranscriber:
+    """Test stand-in: returns a fixed question for any non-empty audio."""
+
+    def transcribe(self, audio: bytes, language: str | None = None) -> Transcript:
+        if not audio.strip(b"\x00"):
+            raise AudioDecodeError("Could not read the audio: empty")
+        return Transcript(text="How many days of annual leave do I get?", language=language or "en", duration_s=2.0)
+
+
+@lru_cache
+def get_transcriber() -> Transcriber:
+    s = get_settings()
+    if s.fake_models:
+        return FakeTranscriber()
+    return WhisperTranscriber(
+        s.whisper_model, s.whisper_compute_type, s.whisper_download_root, s.whisper_translate_to_english
+    )
